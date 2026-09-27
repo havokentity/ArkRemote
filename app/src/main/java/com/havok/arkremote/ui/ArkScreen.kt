@@ -18,11 +18,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.VolumeDown
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
@@ -55,6 +56,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -81,14 +84,16 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.havok.arkremote.ArkViewModel
 import com.havok.arkremote.FoundDevice
+import com.havok.arkremote.InputPort
 import com.havok.arkremote.Monitor
 import com.havok.arkremote.PowerStatus
-import kotlinx.coroutines.delay
+import com.havok.arkremote.Preset
+import com.havok.arkremote.inputFor
 
 private sealed interface DialogState {
     data class Edit(val monitor: Monitor?) : DialogState
     data class ConfirmDelete(val monitor: Monitor) : DialogState
-    data class RenameInput(val index: Int, val current: String) : DialogState
+    data class EditPreset(val index: Int) : DialogState
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -103,10 +108,7 @@ fun ArkScreen(vm: ArkViewModel = viewModel()) {
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (true) {
-                vm.refresh()
-                delay(5000)
-            }
+            vm.pollWhileVisible()
         }
     }
 
@@ -134,11 +136,11 @@ fun ArkScreen(vm: ArkViewModel = viewModel()) {
                 GroupCard(
                     groupSize = state.monitors.count { it.inGroup },
                     busy = state.monitors.any { it.inGroup && it.id in state.busy },
-                    inputLabels = state.inputLabels,
+                    presets = state.presets,
                     onAllOn = vm::allOn,
                     onAllOff = vm::allOff,
-                    onInput = vm::allInput,
-                    onRenameInput = { i -> dialog = DialogState.RenameInput(i, state.inputLabels[i]) },
+                    onPreset = vm::applyPreset,
+                    onEditPreset = { i -> dialog = DialogState.EditPreset(i) },
                 )
             }
             if (state.monitors.isEmpty()) item { EmptyHint(onScan = vm::scan) }
@@ -147,12 +149,14 @@ fun ArkScreen(vm: ArkViewModel = viewModel()) {
                     monitor = m,
                     status = state.status[m.id] ?: PowerStatus.UNKNOWN,
                     busy = state.busy[m.id],
-                    inputLabels = state.inputLabels,
+                    volume = state.volume[m.id],
                     onToggleGroup = { vm.toggleGroup(m.id) },
                     onPowerOn = { vm.powerOn(m.id) },
                     onPowerOff = { vm.powerOff(m.id) },
-                    onInput = { i -> vm.input(m.id, i) },
+                    onInput = { input -> vm.input(m.id, input) },
                     onKey = { k -> vm.key(m.id, k) },
+                    onLoadVolume = { vm.loadVolume(m.id) },
+                    onVolume = { v -> vm.setVolume(m.id, v) },
                     onPair = { vm.pair(m.id) },
                     onEdit = { dialog = DialogState.Edit(m) },
                     onDelete = { dialog = DialogState.ConfirmDelete(m) },
@@ -173,12 +177,12 @@ fun ArkScreen(vm: ArkViewModel = viewModel()) {
             confirmButton = { TextButton(onClick = { vm.delete(d.monitor.id); dialog = null }) { Text("Remove") } },
             dismissButton = { TextButton(onClick = { dialog = null }) { Text("Cancel") } },
         )
-        is DialogState.RenameInput -> TextPromptDialog(
-            title = "Rename HDMI ${d.index + 1}",
-            hint = "e.g. Gaming PC",
-            initial = d.current,
+        is DialogState.EditPreset -> PresetDialog(
+            index = d.index,
+            preset = state.presets[d.index],
+            monitors = state.monitors,
             onDismiss = { dialog = null },
-            onConfirm = { vm.renameInput(d.index, it); dialog = null },
+            onSave = { vm.savePreset(d.index, it); dialog = null },
         )
         null -> Unit
     }
@@ -198,11 +202,11 @@ fun ArkScreen(vm: ArkViewModel = viewModel()) {
 private fun GroupCard(
     groupSize: Int,
     busy: Boolean,
-    inputLabels: List<String>,
+    presets: List<Preset>,
     onAllOn: () -> Unit,
     onAllOff: () -> Unit,
-    onInput: (Int) -> Unit,
-    onRenameInput: (Int) -> Unit,
+    onPreset: (Int) -> Unit,
+    onEditPreset: (Int) -> Unit,
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)) {
         Column(Modifier.padding(16.dp)) {
@@ -230,13 +234,22 @@ private fun GroupCard(
                 Icon(Icons.Default.Input, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    "Switch all to · long-press to rename",
+                    "Switch all to · long-press to set up",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Spacer(Modifier.height(8.dp))
-            InputRow(inputLabels, onInput, onRenameInput)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                presets.forEachIndexed { i, preset ->
+                    PressableTile(
+                        label = preset.name,
+                        onClick = { onPreset(i) },
+                        onLongClick = { onEditPreset(i) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
             if (busy) {
                 Spacer(Modifier.height(12.dp))
                 LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -246,13 +259,14 @@ private fun GroupCard(
 }
 
 @Composable
-private fun InputRow(labels: List<String>, onClick: (Int) -> Unit, onLongClick: ((Int) -> Unit)? = null) {
+private fun InputRow(inputs: List<InputPort>, onClick: (InputPort) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        labels.forEachIndexed { i, label ->
+        inputs.forEach { input ->
             PressableTile(
-                label = label,
-                onClick = { onClick(i) },
-                onLongClick = onLongClick?.let { cb -> { cb(i) } },
+                label = input.label,
+                sublabel = input.detail.ifBlank { null },
+                onClick = { onClick(input) },
+                onLongClick = null,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -261,7 +275,13 @@ private fun InputRow(labels: List<String>, onClick: (Int) -> Unit, onLongClick: 
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PressableTile(label: String, onClick: () -> Unit, onLongClick: (() -> Unit)?, modifier: Modifier = Modifier) {
+private fun PressableTile(
+    label: String,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+    sublabel: String? = null,
+) {
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.secondaryContainer,
@@ -272,14 +292,24 @@ private fun PressableTile(label: String, onClick: () -> Unit, onLongClick: (() -
             Modifier.fillMaxSize().combinedClickable(onClick = onClick, onLongClick = onLongClick),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                label,
-                style = MaterialTheme.typography.labelLarge,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 4.dp),
-            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelLarge,
+                    textAlign = TextAlign.Center,
+                    maxLines = if (sublabel == null) 2 else 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+                if (sublabel != null) {
+                    Text(
+                        sublabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
+                        maxLines = 1,
+                    )
+                }
+            }
         }
     }
 }
@@ -289,17 +319,20 @@ private fun MonitorCard(
     monitor: Monitor,
     status: PowerStatus,
     busy: String?,
-    inputLabels: List<String>,
+    volume: Int?,
     onToggleGroup: () -> Unit,
     onPowerOn: () -> Unit,
     onPowerOff: () -> Unit,
-    onInput: (Int) -> Unit,
+    onInput: (InputPort) -> Unit,
     onKey: (String) -> Unit,
+    onLoadVolume: () -> Unit,
+    onVolume: (Int) -> Unit,
     onPair: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var expanded by rememberSaveable(monitor.id) { mutableStateOf(false) }
+    LaunchedEffect(expanded) { if (expanded) onLoadVolume() }
     Card {
         Column(Modifier.padding(start = 4.dp, end = 12.dp, top = 8.dp, bottom = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -344,8 +377,10 @@ private fun MonitorCard(
             }
             AnimatedVisibility(expanded) {
                 Column(Modifier.padding(start = 8.dp, top = 12.dp)) {
-                    InputRow(inputLabels, onInput)
-                    Spacer(Modifier.height(16.dp))
+                    InputRow(monitor.inputs, onInput)
+                    Spacer(Modifier.height(12.dp))
+                    VolumeRow(volume, onVolume, onMute = { onKey("KEY_MUTE") })
+                    Spacer(Modifier.height(8.dp))
                     RemotePad(onKey)
                     Spacer(Modifier.height(8.dp))
                     Row {
@@ -364,7 +399,7 @@ private fun MonitorCard(
 private fun StatusPill(status: PowerStatus, working: Boolean) {
     val (label, color) = when (status) {
         PowerStatus.ON -> "On" to Color(0xFF5BD68A)
-        PowerStatus.STANDBY -> "Standby" to Color(0xFFE6B450)
+        PowerStatus.STANDBY -> "Off" to MaterialTheme.colorScheme.outline
         PowerStatus.OFFLINE -> "Off" to MaterialTheme.colorScheme.outline
         PowerStatus.UNKNOWN -> "…" to MaterialTheme.colorScheme.outline
     }
@@ -400,9 +435,6 @@ private fun RemotePad(onKey: (String) -> Unit) {
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             K(Icons.AutoMirrored.Filled.ArrowBack, "Back", "KEY_RETURN"); K(Icons.Default.KeyboardArrowDown, "Down", "KEY_DOWN"); K(Icons.Default.Home, "Home", "KEY_HOME")
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            K(Icons.AutoMirrored.Filled.VolumeDown, "Volume down", "KEY_VOLDOWN"); K(Icons.AutoMirrored.Filled.VolumeOff, "Mute", "KEY_MUTE"); K(Icons.AutoMirrored.Filled.VolumeUp, "Volume up", "KEY_VOLUP")
         }
     }
 }
@@ -450,18 +482,6 @@ private fun MonitorDialog(initial: Monitor?, onDismiss: () -> Unit, onSave: (Str
 }
 
 @Composable
-private fun TextPromptDialog(title: String, hint: String, initial: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
-    var text by remember { mutableStateOf(initial) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = { OutlinedTextField(text, { text = it }, placeholder = { Text(hint) }, singleLine = true) },
-        confirmButton = { TextButton(onClick = { onConfirm(text) }) { Text("Save") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-@Composable
 private fun ScanDialog(
     scanning: Boolean,
     results: List<FoundDevice>,
@@ -501,5 +521,74 @@ private fun ScanDialog(
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
+}
+
+@Composable
+private fun VolumeRow(volume: Int?, onVolume: (Int) -> Unit, onMute: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onMute) { Icon(Icons.AutoMirrored.Filled.VolumeOff, "Mute") }
+        Slider(
+            value = (volume ?: 0).toFloat(),
+            onValueChange = { onVolume(it.toInt()) },
+            valueRange = 0f..100f,
+            enabled = volume != null,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            volume?.toString() ?: "–",
+            style = MaterialTheme.typography.labelLarge,
+            textAlign = TextAlign.End,
+            modifier = Modifier.width(36.dp),
+        )
+        Icon(
+            Icons.AutoMirrored.Filled.VolumeUp,
+            null,
+            Modifier.padding(start = 4.dp).size(20.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun PresetDialog(
+    index: Int,
+    preset: Preset,
+    monitors: List<Monitor>,
+    onDismiss: () -> Unit,
+    onSave: (Preset) -> Unit,
+) {
+    var name by remember { mutableStateOf(preset.name) }
+    // monitor id -> input id ("" = leave alone)
+    var choices by remember {
+        mutableStateOf(monitors.associate { m -> m.id to (preset.inputFor(index, m)?.id ?: "") })
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Button ${index + 1}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(name, { name = it }, label = { Text("Name (e.g. Work PC)") }, singleLine = true)
+                monitors.forEach { m ->
+                    Column {
+                        Text(m.name, style = MaterialTheme.typography.labelLarge)
+                        Row(
+                            Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            (m.inputs.map { it.id to it.label } + ("" to "Skip")).forEach { (id, label) ->
+                                FilterChip(
+                                    selected = choices[m.id] == id,
+                                    onClick = { choices = choices + (m.id to id) },
+                                    label = { Text(label) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(Preset(name.trim(), choices)) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

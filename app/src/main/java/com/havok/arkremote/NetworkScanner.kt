@@ -26,7 +26,7 @@ object NetworkScanner {
                 async(Dispatchers.IO) {
                     gate.withPermit {
                         val ip = "$prefix.$host"
-                        SamsungApi.info(ip, 1200)?.let { FoundDevice(ip, it) }
+                        SamsungApi.info(ip, 1500)?.let { FoundDevice(ip, it) }
                     }
                 }
             }.awaitAll().filterNotNull()

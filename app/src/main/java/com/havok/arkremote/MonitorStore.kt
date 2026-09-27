@@ -14,10 +14,39 @@ data class Monitor(
     val token: String? = null,
     /** Included in the "All" group actions. */
     val inGroup: Boolean = true,
-)
+) {
+    val inputs: List<InputPort> get() = inputsFor(model)
+}
 
-/** The four HDMI inputs, in button order. Labels are user-editable (e.g. "Work PC"). */
-val INPUT_KEYS = listOf("KEY_HDMI1", "KEY_HDMI2", "KEY_HDMI3", "KEY_HDMI4")
+data class InputPort(val id: String, val label: String, val detail: String, val key: String)
+
+/** Physical inputs on each model's One Connect box, in port order. */
+fun inputsFor(model: String): List<InputPort> = when {
+    // Odyssey Ark 2nd gen (G97NC): HDMI 1 is eARC / HDMI 2.0, then two HDMI 2.1, then DisplayPort 1.4.
+    model.startsWith("LS55CG") -> listOf(
+        InputPort("HDMI1", "HDMI 1", "eARC · 2.0", "KEY_HDMI1"),
+        InputPort("HDMI2", "HDMI 2", "2.1", "KEY_HDMI2"),
+        InputPort("HDMI3", "HDMI 3", "2.1", "KEY_HDMI3"),
+        // No dedicated DisplayPort key is documented; the DP input sits in the 4th source slot.
+        InputPort("DP", "DP", "1.4", "KEY_HDMI4"),
+    )
+    // Odyssey Ark 1st gen (G97NB): four HDMI 2.1, eARC on HDMI 3.
+    model.startsWith("LS55BG") -> listOf(
+        InputPort("HDMI1", "HDMI 1", "2.1", "KEY_HDMI1"),
+        InputPort("HDMI2", "HDMI 2", "2.1", "KEY_HDMI2"),
+        InputPort("HDMI3", "HDMI 3", "eARC · 2.1", "KEY_HDMI3"),
+        InputPort("HDMI4", "HDMI 4", "2.1", "KEY_HDMI4"),
+    )
+    else -> (1..4).map { InputPort("HDMI$it", "HDMI $it", "", "KEY_HDMI$it") }
+}
+
+/**
+ * A "switch all" button, e.g. "Work PC". [inputs] maps monitor id -> input id ("" = leave that
+ * monitor alone). Monitors missing from the map use their input at the preset's position.
+ */
+data class Preset(val name: String, val inputs: Map<String, String> = emptyMap())
+
+const val PRESET_COUNT = 4
 
 class MonitorStore(context: Context) {
     private val prefs = context.getSharedPreferences("ark_remote", Context.MODE_PRIVATE)
@@ -65,10 +94,28 @@ class MonitorStore(context: Context) {
         save(load().map { if (it.id == id) transform(it) else it })
     }
 
-    fun inputLabels(): List<String> =
-        INPUT_KEYS.mapIndexed { i, key -> prefs.getString("label_$key", null) ?: "HDMI ${i + 1}" }
-
-    fun setInputLabel(index: Int, label: String) {
-        prefs.edit().putString("label_${INPUT_KEYS[index]}", label.ifBlank { "HDMI ${index + 1}" }).apply()
+    fun presets(): List<Preset> = (0 until PRESET_COUNT).map { i ->
+        val raw = prefs.getString("preset_$i", null)
+        if (raw == null) {
+            // Carry over names given to the old fixed HDMI buttons.
+            Preset(prefs.getString("label_KEY_HDMI${i + 1}", null) ?: "Input ${i + 1}")
+        } else {
+            val o = JSONObject(raw)
+            val map = o.optJSONObject("inputs") ?: JSONObject()
+            Preset(o.getString("name"), map.keys().asSequence().associateWith { map.getString(it) })
+        }
     }
+
+    fun savePreset(index: Int, preset: Preset) {
+        val o = JSONObject()
+            .put("name", preset.name.ifBlank { "Input ${index + 1}" })
+            .put("inputs", JSONObject(preset.inputs))
+        prefs.edit().putString("preset_$index", o.toString()).apply()
+    }
+}
+
+/** The input [preset] (at [index]) selects on [monitor], or null to leave it alone. */
+fun Preset.inputFor(index: Int, monitor: Monitor): InputPort? {
+    val chosen = inputs[monitor.id] ?: return monitor.inputs.getOrNull(index)
+    return monitor.inputs.firstOrNull { it.id == chosen }
 }
