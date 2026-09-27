@@ -1,0 +1,16 @@
+.gradle/
+build/
+*/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Signing material never goes in git
+signing/
+*.p12
+*.jks
+*.keystore
