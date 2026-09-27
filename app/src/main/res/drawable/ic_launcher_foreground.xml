@@ -1,19 +1,47 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Three curved screens side by side -->
+    <!-- Side Arks, angled in toward the viewer -->
+    <path android:pathData="M22,35 L37,38.5 Q37.8,49.5 37,60.5 L22,64 Q20.8,49.5 22,35 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="0" android:startY="34" android:endX="0" android:endY="66">
+                <item android:offset="0" android:color="#FF3FB4E8" />
+                <item android:offset="1" android:color="#FF6242D6" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path android:pathData="M86,35 L71,38.5 Q70.2,49.5 71,60.5 L86,64 Q87.2,49.5 86,35 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="0" android:startY="34" android:endX="0" android:endY="66">
+                <item android:offset="0" android:color="#FF3FB4E8" />
+                <item android:offset="1" android:color="#FF6242D6" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Center Ark -->
+    <path android:pathData="M40,38 Q54,35.5 68,38 L68,61 Q54,58.5 40,61 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="0" android:startY="34" android:endX="0" android:endY="64">
+                <item android:offset="0" android:color="#FF5EE7FF" />
+                <item android:offset="1" android:color="#FF8B5CFF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Stand -->
+    <path android:fillColor="#FFB9C2FF" android:pathData="M51,60 L57,60 L58.5,68 L49.5,68 Z" />
+    <path android:fillColor="#FFB9C2FF" android:pathData="M44,68 L64,68 Q65,68 65,69 L65,70 L43,70 L43,69 Q43,68 44,68 Z" />
+    <!-- Power glyph -->
     <path
-        android:fillColor="#FF7C8CFF"
-        android:pathData="M30,42 Q36,39 42,39 L42,63 Q36,63 30,66 Z" />
+        android:pathData="M49.76,44.26 A6,6 0 1,0 58.24,44.26"
+        android:strokeWidth="2"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round" />
     <path
-        android:fillColor="#FFB4BEFF"
-        android:pathData="M45,39 Q54,37 63,39 L63,63 Q54,61 45,63 Z" />
-    <path
-        android:fillColor="#FF7C8CFF"
-        android:pathData="M66,39 Q72,39 78,42 L78,66 Q72,63 66,63 Z" />
-    <path
-        android:fillColor="#FFB4BEFF"
-        android:pathData="M51,65 L57,65 L58,71 L50,71 Z" />
+        android:pathData="M54,41 L54,47.5"
+        android:strokeWidth="2"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round" />
 </vector>
