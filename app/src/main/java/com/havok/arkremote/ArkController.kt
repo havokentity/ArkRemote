@@ -50,6 +50,12 @@ class ArkController(private val store: MonitorStore) {
             if (n < 2) seen[m.id]?.status ?: PowerStatus.UNKNOWN else record(m, null)
         } else {
             misses[m.id] = 0
+            // Backfill details for monitors added while they weren't reachable.
+            if ((m.model.isBlank() && info.model.isNotBlank()) || (m.mac.isBlank() && info.mac != null)) {
+                store.update(m.id) {
+                    it.copy(model = it.model.ifBlank { info.model }, mac = it.mac.ifBlank { info.mac?.uppercase() ?: "" })
+                }
+            }
             record(m, info)
         }
         val exp = expected[m.id] ?: return actual
