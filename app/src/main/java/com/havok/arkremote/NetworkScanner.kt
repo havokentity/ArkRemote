@@ -12,14 +12,19 @@ import java.net.Inet4Address
 
 data class FoundDevice(val ip: String, val info: DeviceInfo)
 
-/** Probes every host on the phone's /24 for the Samsung info endpoint. Takes ~5-10 s. */
+/** Probes every host on a /24 for the Samsung info endpoint. Takes ~5-10 s. */
 object NetworkScanner {
+    /** Scans the phone's own /24. */
     suspend fun scan(context: Context): List<FoundDevice> {
         val cm = context.getSystemService(ConnectivityManager::class.java)
         val props = cm.getLinkProperties(cm.activeNetwork) ?: return emptyList()
         val own = props.linkAddresses.map { it.address }.filterIsInstance<Inet4Address>().firstOrNull()
             ?: return emptyList()
-        val prefix = own.hostAddress!!.substringBeforeLast('.')
+        return scanPrefix(own.hostAddress!!.substringBeforeLast('.'))
+    }
+
+    /** Scans [prefix].1 – [prefix].254, e.g. prefix "192.168.0". */
+    suspend fun scanPrefix(prefix: String): List<FoundDevice> {
         val gate = Semaphore(48)
         return coroutineScope {
             (1..254).map { host ->
