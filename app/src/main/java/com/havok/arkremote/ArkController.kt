@@ -4,6 +4,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 
@@ -21,7 +23,9 @@ class ArkController(private val store: MonitorStore) {
     private val seen = ConcurrentHashMap<String, Seen>()
     private val misses = ConcurrentHashMap<String, Int>()
     private val expected = ConcurrentHashMap<String, Expect>()
-    private val lastRelocate = ConcurrentHashMap<String, Long>()
+    private class Scan(val prefix: String, val at: Long, val found: List<FoundDevice>)
+    private val scanLock = Mutex()
+    private var lastScan: Scan? = null
 
     private fun now() = System.currentTimeMillis()
 
@@ -31,17 +35,21 @@ class ArkController(private val store: MonitorStore) {
 
     private fun normalizeMac(mac: String) = mac.filter { it.isLetterOrDigit() }.lowercase()
 
+    /** One subnet scan shared by every monitor that needs it, reused for a minute. */
+    private suspend fun scanShared(prefix: String): List<FoundDevice> = scanLock.withLock {
+        lastScan?.takeIf { it.prefix == prefix && now() - it.at < 60_000 }?.found
+            ?: NetworkScanner.scanPrefix(prefix).also { lastScan = Scan(prefix, now(), it) }
+    }
+
     /**
      * Finds a monitor whose DHCP address changed by scanning its /24 for its MAC, and saves
      * the new IP. Returns the updated monitor, or null if it wasn't found at a new address.
-     * Polls are throttled; user actions ([force]) always search.
+     * Only ever called from a user action, never from background status polls: a monitor
+     * that is simply off looks the same as one that moved, and polling would scan forever.
      */
-    suspend fun relocate(m: Monitor, force: Boolean = false): Monitor? {
+    suspend fun relocate(m: Monitor): Monitor? {
         if (m.mac.isBlank()) return null
-        val last = lastRelocate[m.id]
-        if (!force && last != null && now() - last < 60_000) return null
-        lastRelocate[m.id] = now()
-        val found = NetworkScanner.scanPrefix(m.ip.substringBeforeLast('.'))
+        val found = scanShared(m.ip.substringBeforeLast('.'))
             .firstOrNull { it.info.mac != null && normalizeMac(it.info.mac) == normalizeMac(m.mac) }
             ?: return null
         if (found.ip == m.ip) return null
@@ -52,7 +60,7 @@ class ArkController(private val store: MonitorStore) {
     /** Probes the stored IP, falling back to a MAC search if the monitor has moved. */
     private suspend fun reach(m: Monitor): Pair<Monitor, DeviceInfo>? {
         probe(m)?.let { return m to it }
-        val moved = relocate(m, force = true) ?: return null
+        val moved = relocate(m) ?: return null
         return probe(moved)?.let { moved to it }
     }
 
@@ -75,13 +83,7 @@ class ArkController(private val store: MonitorStore) {
         val actual = if (info == null) {
             val n = (misses[m.id] ?: 0) + 1
             misses[m.id] = n
-            when {
-                n < 2 -> seen[m.id]?.status ?: PowerStatus.UNKNOWN
-                // Unreachable for a while: it may have been given a new IP.
-                else -> relocate(m)?.let { moved -> SamsungApi.info(moved.ip) }
-                    ?.let { misses[m.id] = 0; record(m, it) }
-                    ?: record(m, null)
-            }
+            if (n < 2) seen[m.id]?.status ?: PowerStatus.UNKNOWN else record(m, null)
         } else {
             misses[m.id] = 0
             // Backfill details for monitors added while they weren't reachable.
@@ -106,9 +108,8 @@ class ArkController(private val store: MonitorStore) {
 
     /** Returns true if the monitor had to be woken (i.e. it was not already on). */
     suspend fun powerOn(monitor: Monitor): Boolean {
-        val reached = reach(monitor)
-        var m = reached?.first ?: monitor
-        val info = reached?.second
+        var m = monitor
+        val info = probe(m) // no subnet search yet: wake it first, look for it only if it stays silent
         if (info != null && info.isOn) {
             record(m, info)
             return false
@@ -132,7 +133,7 @@ class ArkController(private val store: MonitorStore) {
                 current == null -> {
                     if (m.mac.isNotBlank() && tick % 3 == 0) SamsungApi.wakeOnLan(m.mac, m.ip)
                     // Woke up but not at the old address? Look for it once.
-                    if (tick == 8) relocate(m, force = true)?.let { m = it }
+                    if (tick == 8) relocate(m)?.let { m = it }
                 }
                 current.isOn -> { record(m, current); return true }
                 !poked -> { runCatching { sendKeys(m, "KEY_POWER") }; poked = true }
@@ -174,7 +175,7 @@ class ArkController(private val store: MonitorStore) {
         } catch (e: UnauthorizedException) {
             throw e
         } catch (e: IOException) {
-            current = relocate(current, force = true) ?: throw e
+            current = relocate(current) ?: throw e
             SamsungApi.sendKeys(current.ip, current.token, keys.toList())
         }
         if (token != null && token != current.token) store.update(m.id) { it.copy(token = token) }
